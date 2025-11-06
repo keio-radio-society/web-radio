@@ -96,7 +96,8 @@ async def update_settings(
     await audio_streamer.set_device(updated.audio_device)
 
     message = quote_plus("設定を更新しました。")
-    redirect_url = request.url_for("settings_page") + f"?msg={message}"
+    base_url = str(request.url_for("settings_page"))
+    redirect_url = f"{base_url}?msg={message}"
     return RedirectResponse(redirect_url, status_code=303)
 
 
@@ -112,7 +113,8 @@ async def transmit(
     except Exception as exc:  # pylint: disable=broad-except
         message = f"送信に失敗しました: {exc}"
     encoded_message = quote_plus(message)
-    redirect_url = request.url_for("index") + f"?msg={encoded_message}"
+    base_url = str(request.url_for("index"))
+    redirect_url = f"{base_url}?msg={encoded_message}"
     return RedirectResponse(redirect_url, status_code=303)
 
 
