@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -38,19 +39,37 @@ class DummySerialService:
 class DummyAudioStreamer:
     def __init__(self) -> None:
         self.device: Optional[str] = None
+        self.started = False
+        self.subscribers: Dict[int, asyncio.Queue[bytes]] = {}
+        self.counter = 0
+        self._sample_rate = 48000
+        self._block_size = 960
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.started = False
 
     async def set_device(self, device: Optional[str]) -> None:
         self.device = device or "default"
 
-    async def stream(self):
-        yield b"dummy"
+    def register(self) -> int:
+        queue: asyncio.Queue[bytes] = asyncio.Queue()
+        queue.put_nowait(b"\x00\x01" * 10)
+        subscriber_id = self.counter
+        self.counter += 1
+        self.subscribers[subscriber_id] = queue
+        return subscriber_id
 
-    async def stop(self) -> None:
-        return
+    def unregister(self, subscriber_id: int) -> None:
+        self.subscribers.pop(subscriber_id, None)
 
-    @staticmethod
-    def available_devices() -> List[Dict[str, str]]:
-        return [{"id": "dummy", "description": "Dummy Device"}]
+    def queue_for(self, subscriber_id: int) -> asyncio.Queue[bytes]:
+        return self.subscribers[subscriber_id]
+
+    def available_devices(self) -> List[Dict[str, str]]:
+        return [{"id": "0", "description": "Dummy Device"}]
 
 
 @dataclass
@@ -76,9 +95,9 @@ def test_context(tmp_path, monkeypatch) -> TestContext:
     monkeypatch.setattr(app_dependencies, "engine", test_engine, raising=False)
 
     monkeypatch.setattr(app_main, "SerialService", DummySerialService)
-    monkeypatch.setattr(app_main, "AudioStreamer", DummyAudioStreamer)
+    monkeypatch.setattr(app_main, "SoundDeviceStreamer", DummyAudioStreamer)
     monkeypatch.setattr(web_routes, "SerialService", DummySerialService)
-    monkeypatch.setattr(web_routes, "AudioStreamer", DummyAudioStreamer)
+    monkeypatch.setattr(web_routes, "SoundDeviceStreamer", DummyAudioStreamer)
 
     with TestClient(app_main.app) as client:
         serial_service = client.app.state.serial_service
@@ -138,3 +157,10 @@ def test_transmit_enqueues_command(test_context: TestContext) -> None:
 
     assert response.status_code == 303
     assert test_context.serial_service.commands == ["TEST"]
+
+
+def test_audio_websocket_streams_data(test_context: TestContext) -> None:
+    with test_context.client.websocket_connect("/audio/ws") as websocket:
+        data = websocket.receive_bytes()
+        assert isinstance(data, (bytes, bytearray))
+        assert len(data) > 0

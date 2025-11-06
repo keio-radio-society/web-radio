@@ -19,6 +19,8 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
+音声ストリームは WebSocket (`/audio/ws`) で 16bit PCM を配信し、ブラウザ側の WebAudio API で再生します。PortAudio (`libportaudio`) がインストールされていない場合、`sounddevice` が初期化に失敗し再生できません。Ubuntu では `sudo apt install python3-sounddevice portaudio19-dev` などで導入してください。
+
 ## ディレクトリ構成（概要）
 ```
 app/

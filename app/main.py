@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .audio.streamer import AudioStreamer
+from .audio.streamer import SoundDeviceStreamer
 from .serial.service import SerialConfiguration, SerialService
 from .db import init_db, session_scope
 from .repositories import SettingsRepository
@@ -14,9 +14,10 @@ from .web.routes import router as web_router
 async def lifespan(app: FastAPI):
     init_db()
     serial_service = SerialService()
-    audio_streamer = AudioStreamer()
+    audio_streamer = SoundDeviceStreamer()
 
     await serial_service.start()
+    await audio_streamer.start()
 
     with session_scope() as session:
         stored_settings = SettingsRepository(session).get()
@@ -36,7 +37,12 @@ async def lifespan(app: FastAPI):
 
         logging.getLogger(__name__).warning("Serial configuration failed: %s", exc)
 
-    await audio_streamer.set_device(stored_settings.audio_device)
+    try:
+        await audio_streamer.set_device(stored_settings.audio_device)
+    except Exception as exc:  # pylint: disable=broad-except
+        import logging
+
+        logging.getLogger(__name__).warning("Audio device configuration failed: %s", exc)
 
     app.state.serial_service = serial_service
     app.state.audio_streamer = audio_streamer

@@ -1,13 +1,16 @@
+import logging
 from urllib.parse import quote_plus, unquote_plus
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from ..audio.streamer import AudioStreamer
+from ..audio.streamer import SoundDeviceStreamer
 from ..dependencies import get_audio_streamer, get_serial_service, get_session
 from ..repositories import SettingsRepository
 from ..serial.service import SerialConfiguration, SerialService
+
+logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory="app/web/templates")
 
@@ -18,7 +21,7 @@ router = APIRouter()
 async def index(
     request: Request,
     session=Depends(get_session),
-    serial_service: SerialService = Depends(get_serial_service),
+    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
 ) -> HTMLResponse:
     settings = SettingsRepository(session).get()
     serial_ports = SerialService.available_ports()
@@ -32,7 +35,9 @@ async def index(
             "settings": settings,
             "serial_ports": serial_ports,
             "message": message,
-            "audio_stream_url": request.url_for("audio_stream"),
+            "audio_ws_url": request.url_for("audio_ws"),
+            "audio_sample_rate": audio_streamer._sample_rate,  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            "audio_block_size": audio_streamer._block_size,  # type: ignore[attr-defined]  # pylint: disable=protected-access
         },
     )
 
@@ -41,10 +46,11 @@ async def index(
 async def settings_page(
     request: Request,
     session=Depends(get_session),
+    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
 ) -> HTMLResponse:
     settings = SettingsRepository(session).get()
     serial_ports = SerialService.available_ports()
-    audio_devices = AudioStreamer.available_devices()
+    audio_devices = audio_streamer.available_devices()
     raw_message = request.query_params.get("msg")
     message = unquote_plus(raw_message) if raw_message else None
 
@@ -72,7 +78,7 @@ async def update_settings(
     audio_device: str | None = Form(default=None),
     session=Depends(get_session),
     serial_service: SerialService = Depends(get_serial_service),
-    audio_streamer=Depends(get_audio_streamer),
+    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
 ) -> RedirectResponse:
     repo = SettingsRepository(session)
     updated = repo.update(
@@ -118,14 +124,22 @@ async def transmit(
     return RedirectResponse(redirect_url, status_code=303)
 
 
-@router.get("/audio/stream", name="audio_stream")
-async def audio_stream(
-    audio_streamer=Depends(get_audio_streamer),
-):
-    async def stream_generator():
-        async for chunk in audio_streamer.stream():
-            yield chunk
-
-    return StreamingResponse(
-        stream_generator(), media_type="audio/ogg"
-    )
+@router.websocket("/audio/ws", name="audio_ws")
+async def audio_ws(
+    websocket: WebSocket,
+    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
+) -> None:
+    await websocket.accept()
+    subscriber_id = audio_streamer.register()
+    queue = audio_streamer.queue_for(subscriber_id)
+    try:
+        while True:
+            data = await queue.get()
+            await websocket.send_bytes(data)
+    except WebSocketDisconnect:
+        logger.debug("WebSocket disconnected: %s", websocket.client)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("Audio streaming error: %s", exc)
+        await websocket.close(code=1011, reason=str(exc))
+    finally:
+        audio_streamer.unregister(subscriber_id)

@@ -29,6 +29,130 @@
 
 <div class="box">
   <h2 class="title is-5">音声ストリーム</h2>
-  <audio controls preload="none" src="{{ audio_stream_url }}"></audio>
+  <div class="buttons">
+    <button class="button is-link" id="audio-start">再生</button>
+    <button class="button" id="audio-stop">停止</button>
+  </div>
+  <p id="audio-status" class="has-text-grey">未接続</p>
 </div>
+
+<script>
+  (() => {
+    const wsUrl = "{{ audio_ws_url }}";
+    const sampleRate = {{ audio_sample_rate }};
+    const blockSize = {{ audio_block_size }};
+
+    const startBtn = document.getElementById("audio-start");
+    const stopBtn = document.getElementById("audio-stop");
+    const statusEl = document.getElementById("audio-status");
+
+    let audioContext = null;
+    let processorNode = null;
+    let websocket = null;
+    const bufferQueue = [];
+    let bufferOffset = 0;
+
+    function updateStatus(text, level = "info") {
+      statusEl.textContent = text;
+      statusEl.className = level === "error" ? "has-text-danger" : "has-text-grey";
+    }
+
+    function connect() {
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        return;
+      }
+
+      websocket = new WebSocket(wsUrl.replace("http", "ws"));
+      websocket.binaryType = "arraybuffer";
+
+      websocket.onopen = () => updateStatus("接続中...");
+      websocket.onclose = () => {
+        updateStatus("未接続");
+        stopAudio();
+      };
+      websocket.onerror = () => updateStatus("通信エラーが発生しました", "error");
+      websocket.onmessage = (event) => {
+        const int16 = new Int16Array(event.data);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i += 1) {
+          float32[i] = int16[i] / 32768;
+        }
+        bufferQueue.push(float32);
+      };
+    }
+
+    function startAudio() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+      }
+
+      if (audioContext.state === "suspended") {
+        audioContext.resume();
+      }
+
+      if (!processorNode) {
+        const bufferSize = Math.max(2048, blockSize * 2);
+        processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+        processorNode.onaudioprocess = (event) => {
+          const output = event.outputBuffer.getChannelData(0);
+          output.fill(0);
+
+          let offset = 0;
+          while (offset < output.length && bufferQueue.length > 0) {
+            const current = bufferQueue[0];
+            const available = current.length - bufferOffset;
+            const length = Math.min(available, output.length - offset);
+            output.set(current.subarray(bufferOffset, bufferOffset + length), offset);
+            offset += length;
+            bufferOffset += length;
+            if (bufferOffset >= current.length) {
+              bufferQueue.shift();
+              bufferOffset = 0;
+            }
+          }
+        };
+        processorNode.connect(audioContext.destination);
+      }
+
+      connect();
+      updateStatus("再生中");
+    }
+
+    function stopAudio() {
+      bufferQueue.length = 0;
+      bufferOffset = 0;
+
+      if (processorNode) {
+        processorNode.disconnect();
+        processorNode = null;
+      }
+
+      if (audioContext && audioContext.state !== "closed") {
+        audioContext.suspend();
+      }
+
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.close(1000, "client stop");
+      }
+    }
+
+    startBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      startAudio();
+    });
+
+    stopBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      stopAudio();
+      updateStatus("停止しました");
+    });
+
+    window.addEventListener("beforeunload", () => {
+      stopAudio();
+      if (audioContext) {
+        audioContext.close();
+      }
+    });
+  })();
+</script>
 {% endblock %}

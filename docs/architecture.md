@@ -55,9 +55,9 @@ radio-web-front/
 - エラーは Web UI へステータスフィードバック。
 
 ### 3. 音声ストリーマー
-- 選択された ALSA デバイスを `ffmpeg` サブプロセスで読み取り。
-- `StreamingResponse` を利用して Ogg/Opus を chunk 配信。
-- 各クライアント接続ごとに軽量な `ffmpeg` プロセスを立ち上げ、切断時にクリーンアップ。低遅延を確保しつつ実装負荷を抑える。
+- `sounddevice` (PortAudio) でマイク入力を取得し、そのまま 16bit PCM を配信。
+- WebSocket (`/audio/ws`) 経由でクライアントごとに生 PCM データを送信し、ブラウザ側で WebAudio API を用いて再生。
+- サーバーは購読者ごとのキューを持ち、RawInputStream コールバックから届いたフレームを非同期に配布する。
 
 ### 4. Web UI
 - `/`：テキスト入力＋送信ボタン、送信結果の簡易ログ表示、オーディオプレーヤー（`<audio>` タグでストリーム再生）。
