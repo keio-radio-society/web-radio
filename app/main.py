@@ -1,0 +1,54 @@
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from .audio.streamer import AudioStreamer
+from .serial.service import SerialConfiguration, SerialService
+from .db import init_db, session_scope
+from .repositories import SettingsRepository
+from .web.routes import router as web_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    serial_service = SerialService()
+    audio_streamer = AudioStreamer()
+
+    await serial_service.start()
+
+    with session_scope() as session:
+        stored_settings = SettingsRepository(session).get()
+
+    config = SerialConfiguration(
+        port=stored_settings.serial_port,
+        baud_rate=stored_settings.baud_rate,
+        parity=stored_settings.parity,
+        stop_bits=stored_settings.stop_bits,
+    )
+
+    try:
+        await serial_service.apply_configuration(config)
+    except Exception as exc:  # pylint: disable=broad-except
+        # Serial デバイスが未接続でもアプリは起動できるようにする
+        import logging
+
+        logging.getLogger(__name__).warning("Serial configuration failed: %s", exc)
+
+    await audio_streamer.set_device(stored_settings.audio_device)
+
+    app.state.serial_service = serial_service
+    app.state.audio_streamer = audio_streamer
+
+    try:
+        yield
+    finally:
+        await audio_streamer.stop()
+        await serial_service.stop()
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
+
+app.include_router(web_router)

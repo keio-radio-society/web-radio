@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}設定{% endblock %}
+{% block header %}設定{% endblock %}
+
+{% block content %}
+{% if message %}
+<div class="notification is-info">{{ message }}</div>
+{% endif %}
+
+<form method="post" action="/settings" class="box">
+  <h2 class="title is-5">シリアル設定</h2>
+  <div class="field">
+    <label class="label" for="serial_port">シリアルポート</label>
+    <div class="control">
+      <div class="select is-fullwidth">
+        <select id="serial_port" name="serial_port">
+          <option value="" {% if not settings.serial_port %}selected{% endif %}>未選択</option>
+          {% for port in serial_ports %}
+          <option value="{{ port.device }}" {% if settings.serial_port == port.device %}selected{% endif %}>
+            {{ port.description }} ({{ port.device }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label" for="baud_rate">ボーレート</label>
+    <div class="control">
+      <input class="input" type="number" id="baud_rate" name="baud_rate" value="{{ settings.baud_rate }}" min="1200" step="1" />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label" for="parity">パリティ</label>
+    <div class="control">
+      <div class="select">
+        <select id="parity" name="parity">
+          {% for option in parity_options %}
+          <option value="{{ option }}" {% if settings.parity == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label" for="stop_bits">ストップビット</label>
+    <div class="control">
+      <div class="select">
+        <select id="stop_bits" name="stop_bits">
+          {% for option in stop_bit_options %}
+          <option value="{{ option }}" {% if settings.stop_bits == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="title is-5 mt-5">音声デバイス</h2>
+  <div class="field">
+    <label class="label" for="audio_device">マイクデバイス</label>
+    <div class="control">
+      <div class="select is-fullwidth">
+        <select id="audio_device" name="audio_device">
+          <option value="" {% if not settings.audio_device %}selected{% endif %}>システム既定 (default)</option>
+          {% for device in audio_devices %}
+          <option value="{{ device.id }}" {% if settings.audio_device == device.id %}selected{% endif %}>
+            {{ device.description }} ({{ device.id }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="field is-grouped">
+    <div class="control">
+      <button class="button is-primary" type="submit">保存</button>
+    </div>
+  </div>
+</form>
+{% endblock %}
