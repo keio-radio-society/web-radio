@@ -40,17 +40,22 @@
   (() => {
     const wsUrl = "{{ audio_ws_url }}";
     const sampleRate = {{ audio_sample_rate }};
-    const blockSize = {{ audio_block_size }};
+    const workletUrl = "{{ audio_worklet_url }}";
 
     const startBtn = document.getElementById("audio-start");
     const stopBtn = document.getElementById("audio-stop");
     const statusEl = document.getElementById("audio-status");
 
-    let audioContext = null;
-    let processorNode = null;
-    let websocket = null;
     const bufferQueue = [];
-    let bufferOffset = 0;
+    const prebufferSamples = Math.round(sampleRate * 0.6); // 約600msぶん確保
+    const maxBufferedSamples = Math.round(sampleRate * 2.5); // 約2.5秒で頭打ち
+
+    let audioContext = null;
+    let workletNode = null;
+    let websocket = null;
+    let workletReady = false;
+    let playbackReady = false;
+    let bufferedSamples = 0;
 
     function updateStatus(text, level = "info") {
       statusEl.textContent = text;
@@ -62,7 +67,12 @@
         return;
       }
 
-      websocket = new WebSocket(wsUrl.replace("http", "ws"));
+      const targetUrl =
+        wsUrl.startsWith("ws") || wsUrl.startsWith("wss")
+          ? wsUrl
+          : wsUrl.replace("http", "ws");
+
+      websocket = new WebSocket(targetUrl);
       websocket.binaryType = "arraybuffer";
 
       websocket.onopen = () => updateStatus("接続中...");
@@ -72,46 +82,47 @@
       };
       websocket.onerror = () => updateStatus("通信エラーが発生しました", "error");
       websocket.onmessage = (event) => {
+        if (!workletNode) {
+          return;
+        }
         const int16 = new Int16Array(event.data);
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i += 1) {
           float32[i] = int16[i] / 32768;
         }
-        bufferQueue.push(float32);
+        enqueueChunk(float32);
       };
     }
 
-    function startAudio() {
+    async function ensureAudioContext() {
       if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate,
+        });
+      }
+
+      if (!workletReady) {
+        await audioContext.audioWorklet.addModule(workletUrl);
+        workletNode = new AudioWorkletNode(audioContext, "pcm-player-processor", {
+          outputChannelCount: [1],
+        });
+        workletNode.connect(audioContext.destination);
+        workletReady = true;
+        playbackReady = false;
       }
 
       if (audioContext.state === "suspended") {
-        audioContext.resume();
+        await audioContext.resume();
       }
+    }
 
-      if (!processorNode) {
-        const bufferSize = Math.max(2048, blockSize * 2);
-        processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
-        processorNode.onaudioprocess = (event) => {
-          const output = event.outputBuffer.getChannelData(0);
-          output.fill(0);
-
-          let offset = 0;
-          while (offset < output.length && bufferQueue.length > 0) {
-            const current = bufferQueue[0];
-            const available = current.length - bufferOffset;
-            const length = Math.min(available, output.length - offset);
-            output.set(current.subarray(bufferOffset, bufferOffset + length), offset);
-            offset += length;
-            bufferOffset += length;
-            if (bufferOffset >= current.length) {
-              bufferQueue.shift();
-              bufferOffset = 0;
-            }
-          }
-        };
-        processorNode.connect(audioContext.destination);
+    async function startAudio() {
+      try {
+        await ensureAudioContext();
+      } catch (error) {
+        console.error(error);
+        updateStatus("オーディオ初期化に失敗しました", "error");
+        return;
       }
 
       connect();
@@ -119,12 +130,12 @@
     }
 
     function stopAudio() {
-      bufferQueue.length = 0;
-      bufferOffset = 0;
+      clearBuffers();
 
-      if (processorNode) {
-        processorNode.disconnect();
-        processorNode = null;
+      if (workletNode) {
+        workletNode.disconnect();
+        workletNode = null;
+        workletReady = false;
       }
 
       if (audioContext && audioContext.state !== "closed") {
@@ -136,9 +147,9 @@
       }
     }
 
-    startBtn.addEventListener("click", (event) => {
+    startBtn.addEventListener("click", async (event) => {
       event.preventDefault();
-      startAudio();
+      await startAudio();
     });
 
     stopBtn.addEventListener("click", (event) => {
@@ -153,6 +164,57 @@
         audioContext.close();
       }
     });
+
+    function enqueueChunk(float32) {
+      bufferQueue.push({ data: float32, length: float32.length });
+      bufferedSamples += float32.length;
+
+      if (bufferedSamples > maxBufferedSamples) {
+        // Drop oldest chunk to keep latency bounded
+        const dropped = bufferQueue.shift();
+        if (dropped) {
+          bufferedSamples -= dropped.length;
+        }
+      }
+
+      if (!playbackReady) {
+        const progress = Math.min(
+          99,
+          Math.round((bufferedSamples / prebufferSamples) * 100)
+        );
+        updateStatus(`バッファリング中... ${progress}%`);
+        if (bufferedSamples >= prebufferSamples) {
+          playbackReady = true;
+          updateStatus("再生中");
+        } else {
+          return;
+        }
+      }
+
+      flushBufferQueue();
+    }
+
+    function flushBufferQueue() {
+      if (!workletNode) {
+        return;
+      }
+      while (bufferQueue.length > 0) {
+        const chunk = bufferQueue.shift();
+        if (!chunk) {
+          break;
+        }
+        bufferedSamples -= chunk.length;
+        workletNode.port.postMessage({ samples: chunk.data.buffer }, [
+          chunk.data.buffer,
+        ]);
+      }
+    }
+
+    function clearBuffers() {
+      bufferQueue.length = 0;
+      bufferedSamples = 0;
+      playbackReady = false;
+    }
   })();
 </script>
 {% endblock %}

@@ -30,14 +30,16 @@ class SoundDeviceStreamer:
     def __init__(
         self,
         sample_rate: int = 48000,
-        block_size: int = 960,
+        block_size: int = 2048,
         channels: int = 1,
         dtype: str = "int16",
+        latency: float = 0.1,
     ) -> None:
         self._sample_rate = sample_rate
         self._block_size = block_size
         self._channels = channels
         self._dtype = dtype
+        self._latency = latency
 
         self._device: Optional[int] = None
         self._stream: Optional[Any] = None
@@ -61,6 +63,7 @@ class SoundDeviceStreamer:
                     blocksize=self._block_size,
                     channels=self._channels,
                     dtype=self._dtype,
+                    latency=self._latency,
                     callback=self._callback,
                 )
                 self._stream.start()
@@ -88,7 +91,7 @@ class SoundDeviceStreamer:
                 await self._restart_locked()
 
     def register(self) -> int:
-        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=20)
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1000)
         subscriber_id = self._subscriber_id
         self._subscriber_id += 1
         self._subscribers[subscriber_id] = queue

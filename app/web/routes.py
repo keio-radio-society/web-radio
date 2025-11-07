@@ -37,7 +37,9 @@ async def index(
             "message": message,
             "audio_ws_url": request.url_for("audio_ws"),
             "audio_sample_rate": audio_streamer._sample_rate,  # type: ignore[attr-defined]  # pylint: disable=protected-access
-            "audio_block_size": audio_streamer._block_size,  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            "audio_worklet_url": request.url_for(
+                "static", path="js/audio-worklet-processor.js"
+            ),
         },
     )
 
