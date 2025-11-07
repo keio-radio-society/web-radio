@@ -59,6 +59,11 @@ radio-web-front/
 - WebSocket (`/audio/ws`) 経由でクライアントごとに生 PCM データを送信し、ブラウザ側で WebAudio API を用いて再生。
 - サーバーは購読者ごとのキューを持ち、RawInputStream コールバックから届いたフレームを非同期に配布する。
 
+### 4. ブラウザ→サーバー送信
+- ブラウザで getUserMedia + AudioWorklet を使って PCM を収集し、WebSocket (`/audio/upload`) で 16bit PCM を送信。
+- サーバーでは PlaybackService が PortAudio の RawOutputStream 経由で選択した出力デバイスへ再生、送信者は 1 クライアントに限定。
+- 設定画面で入出力デバイスを個別に選択し、AppSettings に永続化する。
+
 ### 4. Web UI
 - `/`：テキスト入力＋送信ボタン、送信結果の簡易ログ表示、オーディオプレーヤー（`<audio>` タグでストリーム再生）。
 - `/settings`：シリアルポートとマイクデバイスの選択ドロップダウン、通信パラメータフォーム。送信後は即保存。

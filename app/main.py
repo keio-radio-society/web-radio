@@ -4,9 +4,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .audio.streamer import SoundDeviceStreamer
+from .audio.playback import PlaybackService
 from .serial.service import SerialConfiguration, SerialService
 from .db import init_db, session_scope
 from .repositories import SettingsRepository
+from .webrtc.manager import WebRTCManager
 from .web.routes import router as web_router
 
 
@@ -15,9 +17,12 @@ async def lifespan(app: FastAPI):
     init_db()
     serial_service = SerialService()
     audio_streamer = SoundDeviceStreamer()
+    playback_service = PlaybackService()
+    webrtc_manager = WebRTCManager(audio_streamer, playback_service)
 
     await serial_service.start()
     await audio_streamer.start()
+    await playback_service.start()
 
     with session_scope() as session:
         stored_settings = SettingsRepository(session).get()
@@ -44,13 +49,24 @@ async def lifespan(app: FastAPI):
 
         logging.getLogger(__name__).warning("Audio device configuration failed: %s", exc)
 
+    try:
+        await playback_service.set_device(stored_settings.audio_playback_device)
+    except Exception as exc:  # pylint: disable=broad-except
+        import logging
+
+        logging.getLogger(__name__).warning("Playback device configuration failed: %s", exc)
+
     app.state.serial_service = serial_service
     app.state.audio_streamer = audio_streamer
+    app.state.playback_service = playback_service
+    app.state.webrtc_manager = webrtc_manager
 
     try:
         yield
     finally:
+        await webrtc_manager.shutdown()
         await audio_streamer.stop()
+        await playback_service.stop()
         await serial_service.stop()
 
 

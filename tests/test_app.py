@@ -72,11 +72,60 @@ class DummyAudioStreamer:
         return [{"id": "0", "description": "Dummy Device"}]
 
 
+class DummyPlaybackService:
+    def __init__(self) -> None:
+        self.device: Optional[str] = None
+        self.queue: List[bytes] = []
+        self.active_sender: Optional[str] = None
+
+    async def start(self) -> None:
+        return
+
+    async def stop(self) -> None:
+        return
+
+    async def set_device(self, device: Optional[str]) -> None:
+        self.device = device or "default"
+
+    def available_devices(self) -> List[Dict[str, str]]:
+        return [{"id": "1", "description": "Dummy Speaker"}]
+
+    def can_acquire(self) -> bool:
+        return self.active_sender is None
+
+    def acquire(self, sender_id: str) -> bool:
+        if self.active_sender and self.active_sender != sender_id:
+            return False
+        self.active_sender = sender_id
+        return True
+
+    def release(self, sender_id: str) -> None:
+        if self.active_sender == sender_id:
+            self.active_sender = None
+
+    async def enqueue(self, data: bytes) -> None:
+        self.queue.append(data)
+
+
+class DummyWebRTCManager:
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    async def process_offer(self, offer, session_id=None):
+        self.calls.append({"offer": offer, "session_id": session_id})
+        return {"sdp": "answer-sdp", "type": "answer", "session_id": "session-1"}
+
+    async def shutdown(self) -> None:
+        return
+
+
 @dataclass
 class TestContext:
     client: TestClient
     serial_service: DummySerialService
     audio_streamer: DummyAudioStreamer
+    playback_service: DummyPlaybackService
+    webrtc_manager: DummyWebRTCManager
 
 
 TestContext.__test__ = False
@@ -96,16 +145,23 @@ def test_context(tmp_path, monkeypatch) -> TestContext:
 
     monkeypatch.setattr(app_main, "SerialService", DummySerialService)
     monkeypatch.setattr(app_main, "SoundDeviceStreamer", DummyAudioStreamer)
+    monkeypatch.setattr(app_main, "PlaybackService", DummyPlaybackService)
+    monkeypatch.setattr(app_main, "WebRTCManager", DummyWebRTCManager)
     monkeypatch.setattr(web_routes, "SerialService", DummySerialService)
     monkeypatch.setattr(web_routes, "SoundDeviceStreamer", DummyAudioStreamer)
+    monkeypatch.setattr(web_routes, "PlaybackService", DummyPlaybackService)
 
     with TestClient(app_main.app) as client:
         serial_service = client.app.state.serial_service
         audio_streamer = client.app.state.audio_streamer
+        playback_service = client.app.state.playback_service
+        webrtc_manager = client.app.state.webrtc_manager
         yield TestContext(
             client=client,
             serial_service=serial_service,
             audio_streamer=audio_streamer,
+            playback_service=playback_service,
+            webrtc_manager=webrtc_manager,
         )
 
 
@@ -125,6 +181,7 @@ def test_update_settings_persists_and_notifies_services(test_context: TestContex
             "parity": "E",
             "stop_bits": "2",
             "audio_device": "dummy",
+            "playback_device": "1",
         },
         allow_redirects=False,
     )
@@ -137,6 +194,7 @@ def test_update_settings_persists_and_notifies_services(test_context: TestContex
         "stop_bits": 2.0,
     }
     assert test_context.audio_streamer.device == "dummy"
+    assert test_context.playback_service.device == "1"
 
     with Session(app_db.engine) as session:
         repo = SettingsRepository(session)
@@ -146,6 +204,7 @@ def test_update_settings_persists_and_notifies_services(test_context: TestContex
         assert stored.parity == "E"
         assert stored.stop_bits == 2.0
         assert stored.audio_device == "dummy"
+        assert stored.audio_playback_device == "1"
 
 
 def test_transmit_enqueues_command(test_context: TestContext) -> None:
@@ -159,8 +218,13 @@ def test_transmit_enqueues_command(test_context: TestContext) -> None:
     assert test_context.serial_service.commands == ["TEST"]
 
 
-def test_audio_websocket_streams_data(test_context: TestContext) -> None:
-    with test_context.client.websocket_connect("/audio/ws") as websocket:
-        data = websocket.receive_bytes()
-        assert isinstance(data, (bytes, bytearray))
-        assert len(data) > 0
+def test_webrtc_session_endpoint_calls_manager(test_context: TestContext) -> None:
+    response = test_context.client.post(
+        "/webrtc/session",
+        json={"sdp": "offer-sdp", "type": "offer", "session_id": None},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sdp"] == "answer-sdp"
+    assert data["session_id"] == "session-1"
+    assert test_context.webrtc_manager.calls[0]["offer"].sdp == "offer-sdp"

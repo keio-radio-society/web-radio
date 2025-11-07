@@ -7,6 +7,8 @@ from sqlmodel import Session
 from .db import engine
 from .serial.service import SerialService
 from .audio.streamer import SoundDeviceStreamer
+from .audio.playback import PlaybackService
+from .webrtc.manager import WebRTCManager
 
 
 def get_session() -> Iterator[Session]:
@@ -38,3 +40,19 @@ def get_audio_streamer(
 ) -> SoundDeviceStreamer:
     app = _get_app(request, websocket)
     return cast(SoundDeviceStreamer, app.state.audio_streamer)
+
+
+def get_playback_service(
+    request: Request = None,
+    websocket: WebSocket = None,
+) -> PlaybackService:
+    app = _get_app(request, websocket)
+    return cast(PlaybackService, app.state.playback_service)
+
+
+def get_webrtc_manager(
+    request: Request = None,
+    websocket: WebSocket = None,
+) -> WebRTCManager:
+    app = _get_app(request, websocket)
+    return cast(WebRTCManager, app.state.webrtc_manager)

@@ -1,12 +1,21 @@
 import logging
 from urllib.parse import quote_plus, unquote_plus
 
-from fastapi import APIRouter, Depends, Form, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from aiortc import RTCSessionDescription
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from ..audio.streamer import SoundDeviceStreamer
-from ..dependencies import get_audio_streamer, get_serial_service, get_session
+from ..audio.playback import PlaybackService
+from ..dependencies import (
+    get_audio_streamer,
+    get_playback_service,
+    get_serial_service,
+    get_session,
+    get_webrtc_manager,
+)
 from ..repositories import SettingsRepository
 from ..serial.service import SerialConfiguration, SerialService
 
@@ -17,11 +26,16 @@ templates = Jinja2Templates(directory="app/web/templates")
 router = APIRouter()
 
 
+class WebRTCSessionRequest(BaseModel):
+    sdp: str
+    type: str
+    session_id: str | None = None
+
+
 @router.get("/", response_class=HTMLResponse, name="index")
 async def index(
     request: Request,
     session=Depends(get_session),
-    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
 ) -> HTMLResponse:
     settings = SettingsRepository(session).get()
     serial_ports = SerialService.available_ports()
@@ -35,11 +49,7 @@ async def index(
             "settings": settings,
             "serial_ports": serial_ports,
             "message": message,
-            "audio_ws_url": request.url_for("audio_ws"),
-            "audio_sample_rate": audio_streamer._sample_rate,  # type: ignore[attr-defined]  # pylint: disable=protected-access
-            "audio_worklet_url": request.url_for(
-                "static", path="js/audio-worklet-processor.js"
-            ),
+            "webrtc_session_url": request.url_for("webrtc_session"),
         },
     )
 
@@ -49,10 +59,12 @@ async def settings_page(
     request: Request,
     session=Depends(get_session),
     audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
+    playback_service: PlaybackService = Depends(get_playback_service),
 ) -> HTMLResponse:
     settings = SettingsRepository(session).get()
     serial_ports = SerialService.available_ports()
     audio_devices = audio_streamer.available_devices()
+    playback_devices = playback_service.available_devices()
     raw_message = request.query_params.get("msg")
     message = unquote_plus(raw_message) if raw_message else None
 
@@ -63,6 +75,7 @@ async def settings_page(
             "settings": settings,
             "serial_ports": serial_ports,
             "audio_devices": audio_devices,
+            "playback_devices": playback_devices,
             "parity_options": ["N", "E", "O", "M", "S"],
             "stop_bit_options": [1, 1.5, 2],
             "message": message,
@@ -78,9 +91,11 @@ async def update_settings(
     parity: str = Form(default="N"),
     stop_bits: float = Form(default=1.0),
     audio_device: str | None = Form(default=None),
+    playback_device: str | None = Form(default=None),
     session=Depends(get_session),
     serial_service: SerialService = Depends(get_serial_service),
     audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
+    playback_service: PlaybackService = Depends(get_playback_service),
 ) -> RedirectResponse:
     repo = SettingsRepository(session)
     updated = repo.update(
@@ -90,6 +105,7 @@ async def update_settings(
             "parity": parity,
             "stop_bits": float(stop_bits),
             "audio_device": audio_device or None,
+            "audio_playback_device": playback_device or None,
         }
     )
 
@@ -102,6 +118,7 @@ async def update_settings(
 
     await serial_service.apply_configuration(config)
     await audio_streamer.set_device(updated.audio_device)
+    await playback_service.set_device(updated.audio_playback_device)
 
     message = quote_plus("設定を更新しました。")
     base_url = str(request.url_for("settings_page"))
@@ -126,22 +143,11 @@ async def transmit(
     return RedirectResponse(redirect_url, status_code=303)
 
 
-@router.websocket("/audio/ws", name="audio_ws")
-async def audio_ws(
-    websocket: WebSocket,
-    audio_streamer: SoundDeviceStreamer = Depends(get_audio_streamer),
-) -> None:
-    await websocket.accept()
-    subscriber_id = audio_streamer.register()
-    queue = audio_streamer.queue_for(subscriber_id)
-    try:
-        while True:
-            data = await queue.get()
-            await websocket.send_bytes(data)
-    except WebSocketDisconnect:
-        logger.debug("WebSocket disconnected: %s", websocket.client)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("Audio streaming error: %s", exc)
-        await websocket.close(code=1011, reason=str(exc))
-    finally:
-        audio_streamer.unregister(subscriber_id)
+@router.post("/webrtc/session", name="webrtc_session")
+async def webrtc_session(
+    payload: WebRTCSessionRequest,
+    manager=Depends(get_webrtc_manager),
+) -> JSONResponse:
+    offer = RTCSessionDescription(sdp=payload.sdp, type=payload.type)
+    answer = await manager.process_offer(offer, payload.session_id)
+    return JSONResponse(answer)

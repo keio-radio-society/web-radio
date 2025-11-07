@@ -176,3 +176,7 @@ class SoundDeviceStreamer:
                 "PortAudio ライブラリが見つかりません。'sounddevice' を利用するには libportaudio の導入が必要です。"
             ) from _SOUNDDEVICE_IMPORT_ERROR
         return sd
+
+    @property
+    def sample_rate(self) -> int:
+        return int(self._sample_rate)

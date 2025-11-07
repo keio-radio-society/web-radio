@@ -29,192 +29,211 @@
 
 <div class="box">
   <h2 class="title is-5">音声ストリーム</h2>
+  <audio id="audio-player" controls autoplay playsinline class="mb-3"></audio>
   <div class="buttons">
-    <button class="button is-link" id="audio-start">再生</button>
-    <button class="button" id="audio-stop">停止</button>
+    <button class="button is-link" id="connect-btn">再生開始</button>
+    <button class="button" id="disconnect-btn">再生停止</button>
   </div>
-  <p id="audio-status" class="has-text-grey">未接続</p>
+  <p id="playback-status" class="has-text-grey">未接続</p>
+</div>
+
+<div class="box">
+  <h2 class="title is-5">音声送信</h2>
+  <div class="buttons">
+    <button class="button is-primary" id="uplink-start">送信開始</button>
+    <button class="button" id="uplink-stop">送信停止</button>
+  </div>
+  <p id="uplink-status" class="has-text-grey">未送信</p>
 </div>
 
 <script>
   (() => {
-    const wsUrl = "{{ audio_ws_url }}";
-    const sampleRate = {{ audio_sample_rate }};
-    const workletUrl = "{{ audio_worklet_url }}";
+    const sessionUrl = "{{ webrtc_session_url }}";
+    const audioEl = document.getElementById("audio-player");
+    const connectBtn = document.getElementById("connect-btn");
+    const disconnectBtn = document.getElementById("disconnect-btn");
+    const playbackStatus = document.getElementById("playback-status");
+    const uplinkStartBtn = document.getElementById("uplink-start");
+    const uplinkStopBtn = document.getElementById("uplink-stop");
+    const uplinkStatus = document.getElementById("uplink-status");
 
-    const startBtn = document.getElementById("audio-start");
-    const stopBtn = document.getElementById("audio-stop");
-    const statusEl = document.getElementById("audio-status");
+    let pc = null;
+    let sessionId = null;
+    let localStream = null;
+    let micSender = null;
 
-    const bufferQueue = [];
-    const prebufferSamples = Math.round(sampleRate * 0.6); // 約600msぶん確保
-    const maxBufferedSamples = Math.round(sampleRate * 2.5); // 約2.5秒で頭打ち
-
-    let audioContext = null;
-    let workletNode = null;
-    let websocket = null;
-    let workletReady = false;
-    let playbackReady = false;
-    let bufferedSamples = 0;
-
-    function updateStatus(text, level = "info") {
-      statusEl.textContent = text;
-      statusEl.className = level === "error" ? "has-text-danger" : "has-text-grey";
+    function updatePlaybackStatus(text, level = "info") {
+      playbackStatus.textContent = text;
+      playbackStatus.className = level === "error" ? "has-text-danger" : "has-text-grey";
     }
 
-    function connect() {
-      if (websocket && websocket.readyState === WebSocket.OPEN) {
+    function updateUplinkStatus(text, level = "info") {
+      uplinkStatus.textContent = text;
+      uplinkStatus.className = level === "error" ? "has-text-danger" : "has-text-grey";
+    }
+
+    async function negotiate() {
+      if (!pc) {
+        return;
+      }
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const response = await fetch(sessionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sdp: pc.localDescription.sdp,
+          type: pc.localDescription.type,
+          session_id: sessionId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("シグナリングに失敗しました");
+      }
+
+      const answer = await response.json();
+      sessionId = answer.session_id;
+      await pc.setRemoteDescription(answer);
+    }
+
+    async function startConnection() {
+      if (pc) {
+        updatePlaybackStatus("既に接続済みです");
         return;
       }
 
-      const targetUrl =
-        wsUrl.startsWith("ws") || wsUrl.startsWith("wss")
-          ? wsUrl
-          : wsUrl.replace("http", "ws");
+      pc = new RTCPeerConnection({
+        bundlePolicy: "max-bundle",
+        rtcpMuxPolicy: "require",
+      });
 
-      websocket = new WebSocket(targetUrl);
-      websocket.binaryType = "arraybuffer";
-
-      websocket.onopen = () => updateStatus("接続中...");
-      websocket.onclose = () => {
-        updateStatus("未接続");
-        stopAudio();
-      };
-      websocket.onerror = () => updateStatus("通信エラーが発生しました", "error");
-      websocket.onmessage = (event) => {
-        if (!workletNode) {
-          return;
+      pc.ontrack = (event) => {
+        if (event.track.kind === "audio") {
+          const [stream] = event.streams;
+          audioEl.srcObject = stream;
         }
-        const int16 = new Int16Array(event.data);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i += 1) {
-          float32[i] = int16[i] / 32768;
-        }
-        enqueueChunk(float32);
       };
-    }
 
-    async function ensureAudioContext() {
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({
-          sampleRate,
-        });
-      }
+      pc.onconnectionstatechange = () => {
+        if (!pc) return;
+        if (pc.connectionState === "failed") {
+          updatePlaybackStatus("接続に失敗しました", "error");
+        } else if (pc.connectionState === "connected") {
+          updatePlaybackStatus("再生中");
+        }
+      };
 
-      if (!workletReady) {
-        await audioContext.audioWorklet.addModule(workletUrl);
-        workletNode = new AudioWorkletNode(audioContext, "pcm-player-processor", {
-          outputChannelCount: [1],
-        });
-        workletNode.connect(audioContext.destination);
-        workletReady = true;
-        playbackReady = false;
-      }
-
-      if (audioContext.state === "suspended") {
-        await audioContext.resume();
-      }
-    }
-
-    async function startAudio() {
       try {
-        await ensureAudioContext();
+        await negotiate();
+        updatePlaybackStatus("再生中");
       } catch (error) {
         console.error(error);
-        updateStatus("オーディオ初期化に失敗しました", "error");
+        updatePlaybackStatus("接続に失敗しました", "error");
+        await stopConnection();
+      }
+    }
+
+    async function stopConnection() {
+      await stopUplink();
+      sessionId = null;
+
+      if (pc) {
+        pc.getSenders().forEach((sender) => {
+          try {
+            pc.removeTrack(sender);
+          } catch (_) {
+            // ignore
+          }
+        });
+        pc.close();
+        pc = null;
+      }
+
+      if (audioEl.srcObject) {
+        audioEl.srcObject.getTracks().forEach((track) => track.stop());
+        audioEl.srcObject = null;
+      }
+      updatePlaybackStatus("未接続");
+    }
+
+    async function startUplink() {
+      if (!pc) {
+        updatePlaybackStatus("先に再生を開始してください", "error");
         return;
       }
 
-      connect();
-      updateStatus("再生中");
-    }
-
-    function stopAudio() {
-      clearBuffers();
-
-      if (workletNode) {
-        workletNode.disconnect();
-        workletNode = null;
-        workletReady = false;
-      }
-
-      if (audioContext && audioContext.state !== "closed") {
-        audioContext.suspend();
-      }
-
-      if (websocket && websocket.readyState === WebSocket.OPEN) {
-        websocket.close(1000, "client stop");
-      }
-    }
-
-    startBtn.addEventListener("click", async (event) => {
-      event.preventDefault();
-      await startAudio();
-    });
-
-    stopBtn.addEventListener("click", (event) => {
-      event.preventDefault();
-      stopAudio();
-      updateStatus("停止しました");
-    });
-
-    window.addEventListener("beforeunload", () => {
-      stopAudio();
-      if (audioContext) {
-        audioContext.close();
-      }
-    });
-
-    function enqueueChunk(float32) {
-      bufferQueue.push({ data: float32, length: float32.length });
-      bufferedSamples += float32.length;
-
-      if (bufferedSamples > maxBufferedSamples) {
-        // Drop oldest chunk to keep latency bounded
-        const dropped = bufferQueue.shift();
-        if (dropped) {
-          bufferedSamples -= dropped.length;
-        }
-      }
-
-      if (!playbackReady) {
-        const progress = Math.min(
-          99,
-          Math.round((bufferedSamples / prebufferSamples) * 100)
-        );
-        updateStatus(`バッファリング中... ${progress}%`);
-        if (bufferedSamples >= prebufferSamples) {
-          playbackReady = true;
-          updateStatus("再生中");
-        } else {
-          return;
-        }
-      }
-
-      flushBufferQueue();
-    }
-
-    function flushBufferQueue() {
-      if (!workletNode) {
+      if (micSender) {
+        updateUplinkStatus("送信中");
         return;
       }
-      while (bufferQueue.length > 0) {
-        const chunk = bufferQueue.shift();
-        if (!chunk) {
-          break;
-        }
-        bufferedSamples -= chunk.length;
-        workletNode.port.postMessage({ samples: chunk.data.buffer }, [
-          chunk.data.buffer,
-        ]);
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (error) {
+        console.error(error);
+        updateUplinkStatus("マイクの使用が許可されません", "error");
+        return;
+      }
+
+      const [track] = localStream.getAudioTracks();
+      micSender = pc.addTrack(track, localStream);
+      updateUplinkStatus("送信準備中...");
+      try {
+        await negotiate();
+        updateUplinkStatus("送信中");
+      } catch (error) {
+        console.error(error);
+        updateUplinkStatus("送信開始に失敗しました", "error");
       }
     }
 
-    function clearBuffers() {
-      bufferQueue.length = 0;
-      bufferedSamples = 0;
-      playbackReady = false;
+    async function stopUplink() {
+      if (micSender && pc) {
+        try {
+          pc.removeTrack(micSender);
+        } catch (_) {
+          // ignore
+        }
+        micSender = null;
+        try {
+          await negotiate();
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+        localStream = null;
+      }
+      updateUplinkStatus("未送信");
     }
+
+    connectBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      startConnection();
+    });
+
+    disconnectBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await stopConnection();
+    });
+
+    uplinkStartBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await startUplink();
+    });
+
+    uplinkStopBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await stopUplink();
+    });
+
+    window.addEventListener("beforeunload", async () => {
+      await stopConnection();
+    });
   })();
 </script>
 {% endblock %}

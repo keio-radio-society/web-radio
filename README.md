@@ -19,7 +19,9 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-音声ストリームは WebSocket (`/audio/ws`) で 16bit PCM を配信し、ブラウザ側の WebAudio API で再生します。PortAudio (`libportaudio`) がインストールされていない場合、`sounddevice` が初期化に失敗し再生できません。Ubuntu では `sudo apt install python3-sounddevice portaudio19-dev` などで導入してください。
+音声ストリームは WebRTC (Opus) でブラウザとサーバーを直結し、サーバー側はマイク入力を Opus 変換なしで aiortc 経由で届けます。PortAudio (`libportaudio`) がインストールされていない場合、`sounddevice` が初期化に失敗し再生できません。Ubuntu では `sudo apt install python3-sounddevice portaudio19-dev` などで導入してください。
+
+ブラウザからの音声送信も同じ WebRTC セッションで行い、サーバー上で選択した出力デバイスにリアルタイムで再生します。送信は 1 クライアント限定で、設定画面から出力デバイスを選択できます。
 
 ## ディレクトリ構成（概要）
 ```

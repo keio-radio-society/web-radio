@@ -76,6 +76,22 @@
     </div>
   </div>
 
+  <div class="field">
+    <label class="label" for="playback_device">出力デバイス</label>
+    <div class="control">
+      <div class="select is-fullwidth">
+        <select id="playback_device" name="playback_device">
+          <option value="" {% if not settings.audio_playback_device %}selected{% endif %}>システム既定 (default)</option>
+          {% for device in playback_devices %}
+          <option value="{{ device.id }}" {% if settings.audio_playback_device == device.id %}selected{% endif %}>
+            {{ device.description }} ({{ device.id }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
   <div class="field is-grouped">
     <div class="control">
       <button class="button is-primary" type="submit">保存</button>
