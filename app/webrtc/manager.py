@@ -47,6 +47,9 @@ class WebRTCManager:
         pc = session.pc
 
         await pc.setRemoteDescription(offer)
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "audio" and transceiver.direction is None:
+                transceiver.direction = "sendrecv"
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
