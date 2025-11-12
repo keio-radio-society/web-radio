@@ -154,16 +154,20 @@ class PlaybackService:
         if status:
             logger.warning("Playback callback status: %s", status)
 
-        bytes_needed = frames * self._channels * 2
+        samples_needed = frames * self._channels
+        bytes_needed = samples_needed * 2
         while len(self._buffer) < bytes_needed and not self._queue.empty():
             chunk = self._queue.get_nowait()
             self._buffer.extend(chunk)
 
-        target = memoryview(outdata).cast("b")
+        target = np.frombuffer(outdata, dtype=np.int16, count=samples_needed)
         if len(self._buffer) < bytes_needed:
-            target[:] = b"\x00" * len(target)
+            target.fill(0)
         else:
-            target[:] = self._buffer[: len(target)]
+            data = np.frombuffer(
+                self._buffer[:bytes_needed], dtype=np.int16, count=samples_needed
+            )
+            target[:] = data
             del self._buffer[:bytes_needed]
 
     def _parse_device(self, device: Optional[str | int]) -> Optional[int]:

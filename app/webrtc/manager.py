@@ -65,6 +65,7 @@ class WebRTCManager:
             return self._sessions[session_id]
 
         pc = RTCPeerConnection()
+        pc.addTransceiver("audio", direction="sendrecv")
         track = StreamerAudioTrack(self._streamer)
         pc.addTrack(track)
 
@@ -112,7 +113,7 @@ class WebRTCManager:
 
         if session.playback_task:
             session.playback_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await session.playback_task
         await session.track.stop()
         await session.pc.close()

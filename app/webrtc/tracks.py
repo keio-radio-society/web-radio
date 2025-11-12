@@ -42,4 +42,4 @@ class StreamerAudioTrack(AudioStreamTrack):
         if not self._closed:
             self._streamer.unregister(self._subscriber_id)
             self._closed = True
-        await super().stop()
+        super().stop()
